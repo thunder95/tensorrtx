@@ -1,3 +1,0 @@
-/f/hulei/tests/tensorrtx/yolov5-face/cmake-build-debug/CMakeFiles/rebuild_cache.dir
-/f/hulei/tests/tensorrtx/yolov5-face/cmake-build-debug/CMakeFiles/yolov5_face.dir
-/f/hulei/tests/tensorrtx/yolov5-face/cmake-build-debug/CMakeFiles/edit_cache.dir
