@@ -1,0 +1,4 @@
+/f/hulei/sys_backup/clion-2018.3.4/bin/cmake/linux/bin/cmake -DCMAKE_BUILD_TYPE=Debug -G "CodeBlocks - Unix Makefiles" /f/hulei/tests/tensorrtx/yolov5-face
+-- Configuring done
+-- Generating done
+-- Build files have been written to: /f/hulei/tests/tensorrtx/yolov5-face/cmake-build-debug
