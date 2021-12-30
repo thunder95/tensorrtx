@@ -127,4 +127,7 @@ namespace nvinfer1
     REGISTER_TENSORRT_PLUGIN(yolov5FacePluginCreator);
 };
 
+extern "C"  void yolov5FacePreprocess(const unsigned char*src,int srcWidth,int srcHeight,int srcPitch, float* dst,int dstWidth,
+                        int dstHeight, int write_x, int write_y, float resize_w, float resize_h, cudaStream_t stream);
+
 #endif 

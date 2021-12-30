@@ -646,17 +646,17 @@ int main(int argc, char** argv)
 ////    }
 //    std::cout << std::endl;
 
-    //测试opencv预处理
+
     float *data;
     int in_h = yolov5FaceConfig::INPUT_H;
-    cudaMalloc<float>(&data, 2000 * 2000 * 3 * sizeof(float));
+    int in_w = yolov5FaceConfig::INPUT_W;
     cv::Mat img = cv::imread("../people.jpg");
     int w, h, x, y;
-    float r_w = 640 / (img.cols * 1.0);
+    float r_w = in_w / (img.cols * 1.0);
     float r_h = in_h / (img.rows * 1.0);
     float r_b;
     if (r_h > r_w) {
-        w = 640;
+        w = in_w;
         h = r_w * img.rows;
         x = 0;
         y = (in_h - h) / 2;
@@ -664,22 +664,36 @@ int main(int argc, char** argv)
     } else {
         w = r_h * img.cols;
         h = in_h;
-        x = (640 - w) / 2;
+        x = (in_w - w) / 2;
         y = 0;
         r_b = r_h;
     }
-    cv::Mat re(h, w, CV_8UC3);
-    cv::resize(img, re, re.size(), 0, 0, cv::INTER_CUBIC);
-    cv::Mat out(in_h, 640, CV_8UC3, cv::Scalar(128, 128, 128));
-    re.copyTo(out(cv::Rect(x, y, re.cols, re.rows)));
-    //split channels
-    out.convertTo(out, CV_32FC3, 1. / 255.);
-    cv::Mat input_channels[3];
-    cv::split(out, input_channels);
-    for (int j = 0; j < 3; j++) {
-        cudaMemcpyAsync(data + 640 * in_h * j,
-                        input_channels[2 - j].data, 640 * in_h * sizeof(float), cudaMemcpyHostToDevice);
-    }
+    cudaMalloc<float>(&data, 2000 * 2000 * 3 * sizeof(float));
+
+    //测试opencv预处理
+//    cv::Mat re(h, w, CV_8UC3);
+//    cv::resize(img, re, re.size(), 0, 0, cv::INTER_CUBIC);
+//    cv::Mat out(in_h, in_w, CV_8UC3, cv::Scalar(128, 128, 128));
+//    re.copyTo(out(cv::Rect(x, y, re.cols, re.rows)));
+//    cv::imshow("debug", out);
+//    cv::waitKey(0);
+//
+//    //split channels
+//    out.convertTo(out, CV_32FC3, 1. / 255.);
+//    cv::Mat input_channels[3];
+//    cv::split(out, input_channels);
+//    for (int j = 0; j < 3; j++) {
+//        cudaMemcpyAsync(data + in_w * in_h * j,
+//                        input_channels[j].data, in_w * in_h * sizeof(float), cudaMemcpyHostToDevice);
+//    }
+
+    unsigned char* img_cuda;
+    cudaMalloc<unsigned char>(&img_cuda, img.cols * img.rows * 3 * sizeof(unsigned char));
+    cudaMemcpyAsync(img_cuda, img.ptr(), img.cols * img.rows * 3 * sizeof(unsigned char), cudaMemcpyHostToDevice);
+    yolov5FacePreprocess(img_cuda, img.cols , img.rows,  img.cols*3, data, yolov5FaceConfig::INPUT_W,
+            yolov5FaceConfig::INPUT_H, x, y, in_h, in_w, nullptr);
+    cudaFree(img_cuda);
+
 
     IRuntime* runtime = createInferRuntime(gLogger);
     assert(runtime != nullptr);
@@ -692,7 +706,7 @@ int main(int argc, char** argv)
     // Run inference
     static float prob[OUTPUT_SIZE];
     auto start = std::chrono::system_clock::now();
-    for (int i = 0; i < 1000; i++) {
+    for (int i = 0; i < 1; i++) {
         doInference(*context, data, prob, 1);
     }
     auto end = std::chrono::system_clock::now();
@@ -702,6 +716,7 @@ int main(int argc, char** argv)
     context->destroy();
     engine->destroy();
     runtime->destroy();
+    cudaFree(data);
 
     std::vector<yolov5FaceConfig::FaceBox> fboxes;
     nms(fboxes, prob);

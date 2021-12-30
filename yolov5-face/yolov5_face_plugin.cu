@@ -261,3 +261,150 @@ namespace nvinfer1
     }
 
 }
+
+//图像预处理
+__global__ void yolov5FacePreprocessKernel(const unsigned char*src,int srcWidth,int srcHeight,int srcPitch,float *dst,
+    int dstWidth,int dstHeight, int write_x, int write_y, float resize_w, float resize_h)
+{
+    double srcXf;
+    double srcYf;
+    int srcX;
+    int srcY;
+    double u;
+    double v;
+    int dstOffset;
+
+    int y = blockIdx.y*blockDim.y+threadIdx.y;
+    int x = blockIdx.x*blockDim.x+threadIdx.x;
+
+    if(x>=dstWidth || y>=dstHeight)
+        return;
+
+    //int write_x,write_y;
+    //float resize_w,resize_h;
+    double r_w = dstWidth / (srcWidth*1.0);
+    double r_h = dstHeight / (srcHeight*1.0);
+    if (r_h > r_w) {
+        resize_w = dstWidth;
+        resize_h = r_w * srcHeight;
+        write_x = 0;
+        write_y = (dstHeight - resize_h) / 2;
+    } else {
+        resize_w = r_h * srcWidth;
+        resize_h = dstHeight;
+        write_x = (dstWidth - resize_w) / 2;
+        write_y = 0;
+    }
+
+    if((x >= write_x) && (x < write_x + resize_w) && (y >= write_y) && (y < write_y + resize_h))
+    {
+        srcXf=  (x - write_x) * ((float)(srcWidth/resize_w)) ;
+        srcYf =  (y - write_y) * ((float)(srcHeight/resize_h));
+        srcX = (int)srcXf;
+        srcY = (int)srcYf;
+        u= srcXf - srcX;
+        v = srcYf - srcY;
+
+        //r chanel
+        if(y*dstWidth+x >= dstWidth*dstHeight)
+        {
+            return;
+        }
+
+        if(srcY*srcPitch+srcX >= srcPitch*srcHeight ||
+           (srcY+1)*srcPitch+srcX >= srcPitch*srcHeight ||
+           srcY*srcPitch+(srcX+1) >= srcPitch*srcHeight ||
+           (srcY+1)*srcPitch+(srcX+1) >= srcPitch*srcHeight)
+        {
+            return;
+        }
+
+        dstOffset =(y*dstWidth+x) + 2 * dstWidth * dstHeight;
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 0;
+        dst[dstOffset]+=(1-u)*(1-v)*src[srcY*srcPitch+srcX*3];
+        dst[dstOffset]+=(1-u)*v*src[(srcY+1)*srcPitch+srcX*3];
+        dst[dstOffset]+=u*(1-v)*src[srcY*srcPitch+(srcX+1)*3];
+        dst[dstOffset]+= u*v*src[(srcY+1)*srcPitch+(srcX+1)*3];
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+
+        //g chanel
+        dstOffset =(y*dstWidth+x) + dstWidth * dstHeight;
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 0;
+        dst[dstOffset]+=(1-u)*(1-v)*src[srcY*srcPitch+srcX*3+1];
+        dst[dstOffset]+=(1-u)*v*src[(srcY+1)*srcPitch+srcX*3+1];
+        dst[dstOffset]+=u*(1-v)*src[srcY*srcPitch+(srcX+1)*3+1];
+        dst[dstOffset]+= u*v*src[(srcY+1)*srcPitch+(srcX+1)*3+1];
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+
+        //b chanel
+        dstOffset =(y*dstWidth+x) ;
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 0;
+        dst[dstOffset]+=(1-u)*(1-v)*src[srcY*srcPitch+srcX*3+2];
+        dst[dstOffset]+=(1-u)*v*src[(srcY+1)*srcPitch+srcX*3+2];
+        dst[dstOffset]+=u*(1-v)*src[srcY*srcPitch+(srcX+1)*3+2];
+        dst[dstOffset]+= u*v*src[(srcY+1)*srcPitch+(srcX+1)*3+2];
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+
+    } else
+    {
+        if(y*dstWidth+x >= dstWidth*dstHeight)
+        {
+            return;
+        }
+
+        //r chanel
+        int dstOffset =(y*dstWidth+x) + 2 * dstWidth * dstHeight;
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 128;
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+
+        //g chanel
+        dstOffset =(y*dstWidth+x) + dstWidth * dstHeight;
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 128;
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+
+        //b chanel
+        dstOffset =(y*dstWidth+x);
+        if(dstOffset >= dstWidth * dstHeight * 3)
+        {
+            return;
+        }
+
+        dst[dstOffset] = 128;
+        dst[dstOffset] = dst[dstOffset] / 255.0;
+    }
+}
+
+void yolov5FacePreprocess(const unsigned char*src,int srcWidth,int srcHeight,int srcPitch, float* dst,int dstWidth,
+    int dstHeight, int write_x, int write_y, float resize_w, float resize_h, cudaStream_t stream)
+{
+    int uint = 16;
+    dim3 grid((dstWidth+uint-1)/uint,(dstHeight+uint-1)/uint);
+    dim3 block(uint,uint);
+    yolov5FacePreprocessKernel<<<grid,block,0,stream>>>(src, srcWidth, srcHeight,srcPitch,dst, dstWidth, dstHeight,
+        write_x, write_y, resize_w, resize_h);
+}
