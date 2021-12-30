@@ -12,7 +12,7 @@ namespace yolov5FaceConfig
         float landmarks[10];
         float conf;
     };
-    static const int INPUT_H = 480;
+    static const int INPUT_H = 384;
     static const int INPUT_W = 640;
     static const int MAX_OUT = 100;
 
@@ -82,8 +82,10 @@ namespace nvinfer1
         private:
             void forwardGpu(const float *const * inputs, float* output, cudaStream_t stream, int batchSize = 1);
             int thread_count_ = 256;
-            int refer_rows = 18900; //(4800 + 1200 + 300)*3
-            int block_grid_size = (refer_rows + thread_count_ - 1) / thread_count_;
+            int refer_rows_1 = 0; //(4800 + 1200 + 300)*3
+            int refer_rows_2 = 0;
+            int refer_rows_3 = 0;
+            int block_grid_size = (refer_rows_3 + thread_count_ - 1) / thread_count_;
             float conf_thresh = 0;
             const char* mPluginNamespace;
 

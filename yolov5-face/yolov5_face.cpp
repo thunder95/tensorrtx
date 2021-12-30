@@ -13,26 +13,21 @@
 #include "memory.h"
 #include <algorithm>
 #include "opencv2/opencv.hpp"
+#include "cuda_runtime.h"
 
-#define CHECK(status, line) \
+#define CHECK(status) \
     do\
     {\
         auto ret = (status);\
-        std::cout<< line << "=>" <<ret<<std::endl; \
         if (ret != 0)\
         {\
-            std::cerr << line << " ---> Cuda failure: " << ret << std::endl;\
+            std::cerr << " ---> Cuda failure: " << ret << std::endl;\
             abort();\
         }\
     } while (0)
 
-// stuff we know about the network and the input/output blobs
-static const int INPUT_H = 480;
-static const int INPUT_W = 640;
-//static const int OUTPUT_SIZE =  64*30*40;
-static const int OUTPUT_SIZE = 3*60*80*16;
-static int real_output_size  = 0;
 
+static const int OUTPUT_SIZE = 1601;
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
 
@@ -75,21 +70,12 @@ static void nms(std::vector<yolov5FaceConfig::FaceBox>& res, float *output, floa
     int det_size = sizeof(yolov5FaceConfig::FaceBox) / sizeof(float);
     std::vector<yolov5FaceConfig::FaceBox> dets;
     for (int i = 0; i < output[0] && i < yolov5FaceConfig::MAX_OUT; i++) {
-        printf("debug: %f, %f\n", output[1 + det_size * i + 4], conf_thresh); //对score再进行一次过滤
         if (output[1 + det_size * i + 4] <= conf_thresh) continue;
         yolov5FaceConfig::FaceBox det;
         memcpy(&det, &output[1 + det_size * i], det_size * sizeof(float));
         dets.push_back(det);
     }
-    printf("dets size: %d\n", dets.size());
 
-    for (int i = 0; i < dets.size(); i++) {
-        printf("--> boxes: %f %f %f %f, score: %f\n", dets[i].bbox[0], dets[i].bbox[1], dets[i].bbox[2],
-               dets[i].bbox[3], dets[i].bbox[4]);
-    }
-
-
-    //std::cout << it->second[0].class_id << " --- " << std::endl;
     std::sort(dets.begin(), dets.end(), cmp);
     for (size_t m = 0; m < dets.size(); ++m) {
         auto& item = dets[m];
@@ -101,9 +87,6 @@ static void nms(std::vector<yolov5FaceConfig::FaceBox>& res, float *output, floa
             }
         }
     }
-
-    printf("dets size: %d, res size: %d\n", dets.size(), res.size());
-
 }
 
 // Load weights from files shared with TensorRT samples.
@@ -194,13 +177,6 @@ IScaleLayer* addBatchNorm2d(INetworkDefinition *network, std::map<std::string, W
 ILayer* convBnSilu(INetworkDefinition *network, std::map<std::string, Weights>& weightMap, ITensor& input, int num_filters, int k, int s, int p, int g, std::string lname) {
     Weights emptywts{DataType::kFLOAT, nullptr, 0};
     IConvolutionLayer* conv = network->addConvolutionNd(input, num_filters, DimsHW{k, k}, weightMap[lname + ".conv.weight"], emptywts);
-
-//    int len = weightMap[lname + ".conv.weight"].count;
-//    float *var = (float*)weightMap[lname + ".conv.weight"].values;
-//    for (int i = 0; i < len; i++) {
-//        printf("%f ",  var[i]);
-//    }
-
     assert(conv);
     conv->setStrideNd(DimsHW{s, s});
     conv->setPaddingNd(DimsHW{p, p});
@@ -282,11 +258,6 @@ ILayer* ShuffleV2Block(INetworkDefinition *network, std::map<std::string, Weight
     assert(cat1);
 
     Dims dims = cat1->getOutput(0)->getDimensions();
-//    std::cout << cat1->getOutput(0)->getName() << " dims: ";
-//    for (int i = 0; i < dims.nbDims; i++) {
-//        std::cout << dims.d[i] << ", ";
-//    }
-//    std::cout << std::endl;
 
     IShuffleLayer *sf1 = network->addShuffle(*cat1->getOutput(0));
     assert(sf1);
@@ -346,7 +317,6 @@ ILayer* UpsampleBlock(INetworkDefinition *network, std::map<std::string, Weights
 
 //Detect head dimensions
 IShuffleLayer* DetectResize(INetworkDefinition *network,  ITensor* input) {
-//    debug_print(input);
     IShuffleLayer *sf = network->addShuffle(*input); // 48 * 60 * 80
     assert(sf);
     auto dims = input->getDimensions();
@@ -356,7 +326,6 @@ IShuffleLayer* DetectResize(INetworkDefinition *network,  ITensor* input) {
     IShuffleLayer *sf2 = network->addShuffle(*sf->getOutput(0));
     assert(sf2);
     sf2->setReshapeDimensions(Dims2(dims.d[1] *dims.d[2] * 3, 16));
-//    debug_print(sf2->getOutput(0));
     return sf2;
 }
 
@@ -365,8 +334,9 @@ ICudaEngine* createEngine(unsigned int maxBatchSize, IBuilder* builder, IBuilder
 {
     INetworkDefinition* network = builder->createNetworkV2(0U);
 
-    // Create input tensor of shape { 3, INPUT_H, INPUT_W } with name INPUT_BLOB_NAME
-    ITensor* data = network->addInput(INPUT_BLOB_NAME, dt, Dims3{3, 480, 640});
+    //todo 支持32倍数的任意图片大小 + 预处理
+
+    ITensor* data = network->addInput(INPUT_BLOB_NAME, dt, Dims3{3, yolov5FaceConfig::INPUT_H, yolov5FaceConfig::INPUT_W});
     assert(data);
 
     std::map<std::string, Weights> weightMap = loadWeights("../yolov5_face.wts");
@@ -436,7 +406,6 @@ ICudaEngine* createEngine(unsigned int maxBatchSize, IBuilder* builder, IBuilder
     ITensor* decode_input = detect_head->getOutput(0);
     auto decode = network->addPluginV2(&decode_input, 1, *plugin_obj);
 
-    real_output_size = getOutSize(decode->getOutput(0));
     decode->getOutput(0)->setName(OUTPUT_BLOB_NAME);
     std::cout << "set name out up1" << std::endl;
     network->markOutput(*decode->getOutput(0));
@@ -496,23 +465,23 @@ void doInference(IExecutionContext& context, float* input, float* output, int ba
     const int outputIndex = engine.getBindingIndex(OUTPUT_BLOB_NAME);
 
     // Create GPU buffers on device
-    CHECK(cudaMalloc(&buffers[inputIndex], batchSize * 3 * INPUT_H * INPUT_W * sizeof(float)), 111);
+    CHECK(cudaMalloc(&buffers[inputIndex], batchSize * 3 * yolov5FaceConfig::INPUT_H * yolov5FaceConfig::INPUT_W * sizeof(float)));
     error = cudaGetLastError();
     printf("CUDA error222: %s\n", cudaGetErrorString(error));
 
-    CHECK(cudaMalloc(&buffers[outputIndex], batchSize * OUTPUT_SIZE * sizeof(float)), 222);
+    CHECK(cudaMalloc(&buffers[outputIndex], batchSize * OUTPUT_SIZE * sizeof(float)));
     error = cudaGetLastError();
     printf("CUDA error333: %s\n", cudaGetErrorString(error));
 
 
     // Create stream
     cudaStream_t stream;
-    CHECK(cudaStreamCreate(&stream), 333);
+    CHECK(cudaStreamCreate(&stream));
 
     // DMA input batch data to device, infer on the batch asynchronously, and DMA output back to host
-    CHECK(cudaMemcpyAsync(buffers[inputIndex], input, batchSize * 3 * INPUT_H * INPUT_W * sizeof(float), cudaMemcpyHostToDevice, stream), 444);
+    CHECK(cudaMemcpyAsync(buffers[inputIndex], input, batchSize * 3 * yolov5FaceConfig::INPUT_H * yolov5FaceConfig::INPUT_W * sizeof(float), cudaMemcpyHostToDevice, stream));
     context.enqueue(batchSize, buffers, stream, nullptr);
-    CHECK(cudaMemcpyAsync(output, buffers[outputIndex], batchSize * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream), 555);
+    CHECK(cudaMemcpyAsync(output, buffers[outputIndex], batchSize * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
     cudaStreamSynchronize(stream);
 
     error = cudaGetLastError();
@@ -520,8 +489,8 @@ void doInference(IExecutionContext& context, float* input, float* output, int ba
 
     // Release stream and buffers
     cudaStreamDestroy(stream);
-    CHECK(cudaFree(buffers[inputIndex]), 666);
-    CHECK(cudaFree(buffers[outputIndex]), 777);
+    CHECK(cudaFree(buffers[inputIndex]));
+    CHECK(cudaFree(buffers[outputIndex]));
 }
 
 int main(int argc, char** argv)
@@ -577,22 +546,140 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    std::map<std::string, Weights> input_wts = loadWeights("/d/hulei/pd_match/yolov5-face/input_img.wts");
-    float *var = (float*)input_wts["img"].values;
-    std::cout<<"img floats num: "<<input_wts["img"].count;
-
-//    float sum = 0.0;
-//    std::cout << "\ninput:\n\n";
-//    for (unsigned int i = 0; i < 192; i++) {
-//        std::cout<<prob[i*30*40]<<", ";
+    //测试输入或输出
+//    std::map<std::string, Weights> input_wts = loadWeights("/d/hulei/pd_match/yolov5-face/input_img.wts");
+//    float *var = (float*)input_wts["img"].values;
+//    std::cout<<"img floats num: "<<input_wts["img"].count;
+//
+////    float sum = 0.0;
+////    std::cout << "\ninput:\n\n";
+////    for (unsigned int i = 0; i < 192; i++) {
+////        std::cout<<prob[i*30*40]<<", ";
+////    }
+//
+//    static float data[3 * 480 * 640];
+//    for (int i = 0; i < 3 * 480 * 640; i++) {
+////        data[i] = 1.0;
+//        data[i] = var[i];
 //    }
+//
+//
+//    IRuntime* runtime = createInferRuntime(gLogger);
+//    assert(runtime != nullptr);
+//    ICudaEngine* engine = runtime->deserializeCudaEngine(trtModelStream, size);
+//    assert(engine != nullptr);
+//    IExecutionContext* context = engine->createExecutionContext();
+//    assert(context != nullptr);
+//    delete[] trtModelStream;
+//
+//    // Run inference
+//    static float prob[OUTPUT_SIZE];
+//    for (int i = 0; i < 10; i++) {
+//        auto start = std::chrono::system_clock::now();
+//        doInference(*context, data, prob, 1);
+//        auto end = std::chrono::system_clock::now();
+//        std::cout << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "us" << std::endl;
+//        break;
+//    }
+//
+//    // Destroy the engine
+//    context->destroy();
+//    engine->destroy();
+//    runtime->destroy();
+//
+//    // Print histogram of the output distribution
+//    std::cout << "\nOutput:\n\n";
+//    std::cout << "\ninput:\n\n";
+//    std::cout<<"real_output_size: "<<real_output_size<<std::endl;
+//    for (unsigned int i = 0; i < 32; i++) {
+//        if (i % 16 == 0)
+//            std::cout<<std::endl;
+//        std::cout<<prob[i]<<", ";
+//    }
+////    std::cout<<std::endl;
+////    for (unsigned int i = real_output_size-20; i < real_output_size; i++) {
+////        std::cout<<prob[i]<<", ";
+////    }
+////    std::cout<<std::endl;
+//
+//    std::vector<yolov5FaceConfig::FaceBox> fboxes;
+//    nms(fboxes, prob);
+//    printf("output size: %f, boxes: %d\n", prob[0], fboxes.size());
+//    for (int i = 0; i < fboxes.size(); i++) {
+//        printf("boxes: %f %f %f %f, score: %f\n", fboxes[i].bbox[0], fboxes[i].bbox[1], fboxes[i].bbox[2],
+//                fboxes[i].bbox[3], fboxes[i].bbox[4]);
+//    }
+//
+//
+////    std::map<std::string, Weights> weightMap = loadWeights("../yolov5_face.wts");
+////    int len = weightMap["model.10.cv1.conv.weight"].count;
+////    float *var = (float*)weightMap["model.10.cv1.conv.weight"].values;
+////    float sum = 0.0;
+////    std::cout << "\ninput:\n\n";
+////    for (unsigned int i = 0; i < 192; i++) {
+////        std::cout<<prob[i*30*40]<<", ";
+////    }
+////    std::cout<<std::endl;
+////
+////    std::cout << "\nweight:\n\n";
+////    for (unsigned int i = 0; i < 192; i++) {
+////        std::cout<<var[i]<<", ";
+////    }
+////    std::cout<<std::endl;
+//
+//
+////    for (unsigned int i = 0; i < 192; i++) {
+////        sum += prob[i*30*40] * var[i];
+////    }
+////    std::cout<<"sum: "<<sum<<std::endl;
+//
+//
+////    for (unsigned int i = 0; i < 1000; i++)
+////    {
+////        std::cout << prob[i] << ", ";
+////        if (i % 10 == 0) std::cout << i / 10 << std::endl;
+////    }
+////    for (unsigned int i = 0; i < 12000; i++)
+////    {
+////
+////        if (i % 1200 == 0) std::cout << prob[i] << ", ";
+////    }
+//    std::cout << std::endl;
 
-    static float data[3 * 480 * 640];
-    for (int i = 0; i < 3 * 480 * 640; i++) {
-//        data[i] = 1.0;
-        data[i] = var[i];
+    //测试opencv预处理
+    float *data;
+    int in_h = yolov5FaceConfig::INPUT_H;
+    cudaMalloc<float>(&data, 2000 * 2000 * 3 * sizeof(float));
+    cv::Mat img = cv::imread("../people.jpg");
+    int w, h, x, y;
+    float r_w = 640 / (img.cols * 1.0);
+    float r_h = in_h / (img.rows * 1.0);
+    float r_b;
+    if (r_h > r_w) {
+        w = 640;
+        h = r_w * img.rows;
+        x = 0;
+        y = (in_h - h) / 2;
+        r_b = r_w;
+    } else {
+        w = r_h * img.cols;
+        h = in_h;
+        x = (640 - w) / 2;
+        y = 0;
+        r_b = r_h;
     }
-
+    cv::Mat re(h, w, CV_8UC3);
+    cv::resize(img, re, re.size(), 0, 0, cv::INTER_CUBIC);
+    cv::Mat out(in_h, 640, CV_8UC3, cv::Scalar(128, 128, 128));
+    re.copyTo(out(cv::Rect(x, y, re.cols, re.rows)));
+    //split channels
+    out.convertTo(out, CV_32FC3, 1. / 255.);
+    cv::Mat input_channels[3];
+    cv::split(out, input_channels);
+    for (int j = 0; j < 3; j++) {
+        cudaMemcpyAsync(data + 640 * in_h * j,
+                        input_channels[2 - j].data, 640 * in_h * sizeof(float), cudaMemcpyHostToDevice);
+    }
 
     IRuntime* runtime = createInferRuntime(gLogger);
     assert(runtime != nullptr);
@@ -604,77 +691,61 @@ int main(int argc, char** argv)
 
     // Run inference
     static float prob[OUTPUT_SIZE];
-    for (int i = 0; i < 10; i++) {
-        auto start = std::chrono::system_clock::now();
+    auto start = std::chrono::system_clock::now();
+    for (int i = 0; i < 1000; i++) {
         doInference(*context, data, prob, 1);
-        auto end = std::chrono::system_clock::now();
-        std::cout << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "us" << std::endl;
-        break;
     }
+    auto end = std::chrono::system_clock::now();
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "us" << std::endl;
 
     // Destroy the engine
     context->destroy();
     engine->destroy();
     runtime->destroy();
 
-    // Print histogram of the output distribution
-    std::cout << "\nOutput:\n\n";
-    std::cout << "\ninput:\n\n";
-    std::cout<<"real_output_size: "<<real_output_size<<std::endl;
-    for (unsigned int i = 0; i < 32; i++) {
-        if (i % 16 == 0)
-            std::cout<<std::endl;
-        std::cout<<prob[i]<<", ";
-    }
-//    std::cout<<std::endl;
-//    for (unsigned int i = real_output_size-20; i < real_output_size; i++) {
-//        std::cout<<prob[i]<<", ";
-//    }
-//    std::cout<<std::endl;
-
     std::vector<yolov5FaceConfig::FaceBox> fboxes;
     nms(fboxes, prob);
-    printf("output size: %f, boxes: %d\n", prob[0], fboxes.size());
+    printf("output size: %f, boxes: %d, img_w: %d, img_h: %d\n", prob[0], fboxes.size(), img.cols, img.rows);
     for (int i = 0; i < fboxes.size(); i++) {
         printf("boxes: %f %f %f %f, score: %f\n", fboxes[i].bbox[0], fboxes[i].bbox[1], fboxes[i].bbox[2],
                 fboxes[i].bbox[3], fboxes[i].bbox[4]);
+
+        for (int k = 0; k<4; k++) {
+
+            if (k % 2 == 0)
+                fboxes[i].bbox[k] -= x;
+            else
+                fboxes[i].bbox[k] -= y;
+            fboxes[i].bbox[k] /= r_b;
+            printf("box:%d ->  %f\n", k, fboxes[i].bbox[k]);
+        }
+
+        for (int k = 0; k<10; k++) {
+            if (k % 2 == 0)
+                fboxes[i].landmarks[k] -= x;
+            else
+                fboxes[i].landmarks[k] -= y;
+            fboxes[i].landmarks[k] /= r_b;
+            printf("landmarks:%d ->  %f\n", k, fboxes[i].landmarks[k]);
+        }
+
+        //画框
+        cv::rectangle(img, cv::Point(fboxes[i].bbox[0], fboxes[i].bbox[1]),
+                      cv::Point(fboxes[i].bbox[2], fboxes[i].bbox[3]), cv::Scalar(0, 0, 255), 3);
+        cv::circle(img, cv::Point(fboxes[i].landmarks[0], fboxes[i].landmarks[1]), 2,
+                   cv::Scalar(255, 0, 0), 2);
+        cv::circle(img, cv::Point(fboxes[i].landmarks[2], fboxes[i].landmarks[3]), 2,
+                   cv::Scalar(255, 0, 0), 2);
+        cv::circle(img, cv::Point(fboxes[i].landmarks[4], fboxes[i].landmarks[5]), 2,
+                   cv::Scalar(255, 0, 0), 2);
+        cv::circle(img, cv::Point(fboxes[i].landmarks[6], fboxes[i].landmarks[7]), 2,
+                   cv::Scalar(255, 0, 0), 2);
+        cv::circle(img, cv::Point(fboxes[i].landmarks[8], fboxes[i].landmarks[9]), 2,
+                   cv::Scalar(255, 0, 0), 2);
+
     }
 
-
-//    std::map<std::string, Weights> weightMap = loadWeights("../yolov5_face.wts");
-//    int len = weightMap["model.10.cv1.conv.weight"].count;
-//    float *var = (float*)weightMap["model.10.cv1.conv.weight"].values;
-//    float sum = 0.0;
-//    std::cout << "\ninput:\n\n";
-//    for (unsigned int i = 0; i < 192; i++) {
-//        std::cout<<prob[i*30*40]<<", ";
-//    }
-//    std::cout<<std::endl;
-//
-//    std::cout << "\nweight:\n\n";
-//    for (unsigned int i = 0; i < 192; i++) {
-//        std::cout<<var[i]<<", ";
-//    }
-//    std::cout<<std::endl;
-
-
-//    for (unsigned int i = 0; i < 192; i++) {
-//        sum += prob[i*30*40] * var[i];
-//    }
-//    std::cout<<"sum: "<<sum<<std::endl;
-
-
-//    for (unsigned int i = 0; i < 1000; i++)
-//    {
-//        std::cout << prob[i] << ", ";
-//        if (i % 10 == 0) std::cout << i / 10 << std::endl;
-//    }
-//    for (unsigned int i = 0; i < 12000; i++)
-//    {
-//
-//        if (i % 1200 == 0) std::cout << prob[i] << ", ";
-//    }
-    std::cout << std::endl;
-
+    cv::imshow("a", img);
+    auto key = cv::waitKey(0);
     return 0;
 }

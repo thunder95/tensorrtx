@@ -23,7 +23,10 @@ namespace nvinfer1
     yolov5FacePlugin::yolov5FacePlugin()
     {
         conf_thresh = yolov5FaceConfig::CONF_THRESH;
-        std::cout<<"init decode plugin"<<std::endl;
+        refer_rows_1 = 3 * yolov5FaceConfig::INPUT_H * yolov5FaceConfig::INPUT_W / (8.0 * 8.0);
+        refer_rows_2 = refer_rows_1 + 3 * yolov5FaceConfig::INPUT_H * yolov5FaceConfig::INPUT_W / (16.0 * 16.0);
+        refer_rows_3 = refer_rows_2 + 3 * yolov5FaceConfig::INPUT_H * yolov5FaceConfig::INPUT_W / (32.0 * 32.0);
+        std::cout<<"init decode plugin" <<std::endl;
     }
 
     yolov5FacePlugin::~yolov5FacePlugin()
@@ -127,32 +130,14 @@ namespace nvinfer1
     __device__ int dev_strides[3] = {8, 16, 32};
 
     //计算, 输入大小 18900 * 16
-    __global__ void CalDetection(const float *input, float *output, int total_grid, int num_elem, int output_elem) {
-
+    __global__ void CalDetection(const float *input, float *output, int refer_rows_1, int refer_rows_2,
+            int refer_rows_3, int num_elem, int output_elem) {
             int idx = threadIdx.x + blockDim.x * blockIdx.x;
             if (idx >= num_elem) return;
 
-            int ori_idx = idx;
             const float* curInput = input + idx * 16; //每行第一个, 16暂时写死
-            int bn_idx = idx / total_grid;      //batch_id, total_grid=18900
-            idx %= total_grid;                  //offset idx in batch_id
-
-            /*
-            bool debug = idx == 18726;
-            if (debug) {
-                printf("debuging222...");
-                for (int i = 0; i< 16;  i++) {
-                    //printf("%f, ", (*(curInput + i)));
-
-                    if (i < 5)
-                        printf("%f, ", Logist(*(curInput + i)));
-                    else
-                        printf("%f, ", (*(curInput + i)));
-
-                }
-                printf("\n");
-            }
-            */
+            int bn_idx = idx / refer_rows_3;      //batch_id, total_grid=18900
+            idx %= refer_rows_3;                  //offset idx in batch_id
 
             // 过滤置信度
             float cur_conf = Logist(*(curInput + 4));
@@ -166,12 +151,12 @@ namespace nvinfer1
 
             //判断位于哪个层
             int layer_idx = 0;
-            if (idx > 18000) {
+            if (idx > refer_rows_2) {
                 layer_idx = 2;
-                idx -= 18000;
-            } else if (idx > 14400) {
+                idx -= refer_rows_2;
+            } else if (idx > refer_rows_1) {
                 layer_idx = 1;
-                idx -= 14400;
+                idx -= refer_rows_1;
             }
 
             int cur_stride = dev_strides[layer_idx];
@@ -188,7 +173,7 @@ namespace nvinfer1
 
             //xywhs c
             float bw = pow((Logist(*(curInput + 2)) * 2), 2) * dev_anchors_grid[layer_idx][2 * anchor_idx]; //w
-            float bh = pow((Logist(*(curInput + 2)) * 2), 2) * dev_anchors_grid[layer_idx][2 * anchor_idx]; //h
+            float bh = pow((Logist(*(curInput + 3)) * 2), 2) * dev_anchors_grid[layer_idx][2 * anchor_idx + 1]; //h
             det->bbox[0] = (Logist(*(curInput)) * 2. - 0.5 + w_idx) * cur_stride - bw / 2.0; //x1
             det->bbox[1] = (Logist(*(curInput + 1)) * 2. - 0.5 + h_idx) * cur_stride - bh / 2.0; //y1
             det->bbox[2] = det->bbox[0] + bw; //x2
@@ -207,27 +192,6 @@ namespace nvinfer1
             det->landmarks[7] = (*(curInput+ 12)) * dev_anchors_grid[layer_idx][2 * anchor_idx + 1] + h_idx * cur_stride;
             det->landmarks[8] = (*(curInput+ 13)) * dev_anchors_grid[layer_idx][2 * anchor_idx] + w_idx * cur_stride;
             det->landmarks[9] = (*(curInput+ 14)) * dev_anchors_grid[layer_idx][2 * anchor_idx + 1] + h_idx * cur_stride;
-
-            //printf("%f, %f, %f, %f\n", det->bbox[0], det->bbox[1], det->bbox[2], det->bbox[3]);
-            //printf("good idx: %d\n", ori_idx);
-            /*
-            if (debug) {
-                printf("===> idx: %d, cur_w: %d\n", idx, cur_w);
-                printf("h %d w %d, stride: %d, anchor_idx: %d, layer_id: %d, anchor_grid: %f\n", h_idx, w_idx, cur_stride,
-                    anchor_idx, layer_idx, dev_anchors_grid[layer_idx][2 * anchor_idx]);
-                printf("lms...%d, ", idx);
-                for (int i = 0; i< 10;  i++) {
-                    printf("%f, ", det->landmarks[i]);
-                }
-                printf("\n");
-                for (int i = 0; i< 5;  i++) {
-                    printf("%f, ", det->bbox[i]);
-                }
-                printf("bbox...%f, ", det->conf);
-                printf("\n");
-            }
-            */
-
         }
 
     void yolov5FacePlugin::forwardGpu(const float *const * inputs, float * output, cudaStream_t stream, int batchSize)
@@ -239,11 +203,11 @@ namespace nvinfer1
             CUDA_CHECK(cudaMemset(output + idx * outputElem, 0, sizeof(float))); //set total_num=0
         }
 
-        int total_num_elem = refer_rows * batchSize;
+        int total_num_elem = refer_rows_3 * batchSize;
         //std::cout<<"total_num_elem: "<<total_num_elem << "row num: "<<row_num<<" batchsize:" << batchSize <<std::endl;
 
         CalDetection << < (total_num_elem + thread_count_ - 1) / thread_count_, thread_count_ , 0, stream >> > (inputs[0],
-                output, refer_rows, total_num_elem, outputElem);
+                output, refer_rows_1, refer_rows_2, refer_rows_3, total_num_elem, outputElem);
     }
 
     int yolov5FacePlugin::enqueue(int batchSize, const void*const * inputs, void** outputs, void* workspace, cudaStream_t stream)
