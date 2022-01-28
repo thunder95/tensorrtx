@@ -755,9 +755,9 @@ int main(int argc, char** argv)
     delete[] trtModelStream;
 
     std::string vpath = "/d/涛哥专用/door_inOut/nanshao_0910_door_0800.m4v";
-    run_video(*context, vpath);
+//    run_video(*context, vpath);
 
-//    run_image(*context);
+    run_image(*context);
 
 
     // Destroy the engine
