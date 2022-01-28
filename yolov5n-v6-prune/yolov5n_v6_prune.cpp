@@ -32,7 +32,10 @@
 const char* INPUT_BLOB_NAME = "data";
 const char* OUTPUT_BLOB_NAME = "prob";
 //const char* INPUT_MODEL_WEIGHTS = "../yolov5n_v6_pruned.wts";
-const char* INPUT_MODEL_WEIGHTS = "../generated.wts";
+//const char* INPUT_MODEL_WEIGHTS = "../generated.wts";
+
+const char* INPUT_MODEL_WEIGHTS="../ori.wts";
+
 const int BATCH_SIZE = 1;
 const int INPUT_WIDTH = 640;
 const int INPUT_HEIGHT = 384;
@@ -613,8 +616,8 @@ void run_video(IExecutionContext& context, std::string& video_path, bool is_show
             cv::Rect tmp_rect;
             get_rect(tmp_rect, img.cols, img.rows, batch_res[j].bbox, INPUT_WIDTH, INPUT_HEIGHT);
 
-            cv::putText(img, std::to_string((int)batch_res[j].class_id), cv::Point(batch_res[j].bbox[0], batch_res[j].bbox[1] - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
-            cv::rectangle(img, cv::Point(batch_res[j].bbox[0], batch_res[j].bbox[1]),  cv::Point(batch_res[j].bbox[2], batch_res[j].bbox[3]), cv::Scalar(0, 0, 255), 3);
+            cv::putText(img, std::to_string((int)batch_res[j].class_id), cv::Point(tmp_rect.x, tmp_rect.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+            cv::rectangle(img, cv::Point(tmp_rect.x, tmp_rect.y),  cv::Point(tmp_rect.x + tmp_rect.width, tmp_rect.y + tmp_rect.height), cv::Scalar(0, 0, 255), 3);
         }
 
 
@@ -630,19 +633,62 @@ void run_video(IExecutionContext& context, std::string& video_path, bool is_show
     cudaFree(buffers[inputIndex]);
     cudaFree(buffers[outputIndex]);
 
+}
 
-//        std::vector<yolov5FaceConfig::FaceBox> fboxes;
-//    nms(fboxes, prob);
-//    printf("output size: %f, boxes: %d, img_w: %d, img_h: %d\n", prob[0], fboxes.size(), img.cols, img.rows);
-//    for (int i = 0; i < fboxes.size(); i++) {
-//        //画框
-//        cv::putText(tmp, std::to_string((int)dr[j].class_id), cv::Point(dr[j].rect.x, dr[j].rect.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
-//        cv::rectangle(img, cv::Point(fboxes[i].bbox[0], fboxes[i].bbox[1]),
-//                      cv::Point(fboxes[i].bbox[2], fboxes[i].bbox[3]), cv::Scalar(0, 0, 255), 3);
-//
-//    }
+void run_image(IExecutionContext& context) {
+    const ICudaEngine& engine = context.getEngine();
+    void* buffers[2];
 
+    // In order to bind the buffers, we need to know the names of the input and output tensors.
+    // Note that indices are guaranteed to be less than IEngine::getNbBindings()
+    const int inputIndex = engine.getBindingIndex(INPUT_BLOB_NAME);
+    const int outputIndex = engine.getBindingIndex(OUTPUT_BLOB_NAME);
 
+    // Create GPU buffers on device
+    CHECK(cudaMalloc(&buffers[inputIndex], BATCH_SIZE * 3 * INPUT_HEIGHT * INPUT_WIDTH * sizeof(float)));
+    CHECK(cudaMalloc(&buffers[outputIndex], BATCH_SIZE * OUTPUT_SIZE * sizeof(float)));
+
+    // Create stream
+    cudaStream_t stream;
+    CHECK(cudaStreamCreate(&stream));
+
+    cv::Mat img = cv::imread("../people.jpg");
+    std::unique_ptr<float> input_data(new float[BATCH_SIZE * 3 * INPUT_HEIGHT * INPUT_WIDTH]);
+    std::unique_ptr<float> output_data(new float[BATCH_SIZE * OUTPUT_SIZE]);
+
+    //预处理
+    ImagePrepare(img, input_data);
+
+    auto start = std::chrono::system_clock::now();
+    for (int i =0; i<1000; i++) {
+        //模型推理
+        CHECK(cudaMemcpyAsync(buffers[inputIndex], input_data.get(), BATCH_SIZE * 3 * INPUT_HEIGHT * INPUT_WIDTH * sizeof(float), cudaMemcpyHostToDevice, stream));
+        context.enqueue(BATCH_SIZE, buffers, stream, nullptr);
+        CHECK(cudaMemcpyAsync(output_data.get(), buffers[outputIndex], BATCH_SIZE * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost, stream));
+        cudaStreamSynchronize(stream);
+    }
+    auto end = std::chrono::system_clock::now();
+    std::cout << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count() << "us" << std::endl;
+
+    std::vector<DetectRes> batch_res;
+    batch_res.clear();
+
+    nms(batch_res, output_data.get(), 0.5, 0.5);
+
+    //修复边界框坐标
+    size_t obj_num = batch_res.size();
+    for (size_t j = 0; j < obj_num; j++) {
+        cv::Rect tmp_rect;
+        get_rect(tmp_rect, img.cols, img.rows, batch_res[j].bbox, INPUT_WIDTH, INPUT_HEIGHT);
+        cv::putText(img, std::to_string((int)batch_res[j].class_id), cv::Point(tmp_rect.x, tmp_rect.y - 1), cv::FONT_HERSHEY_PLAIN, 1.2, cv::Scalar(0xFF, 0xFF, 0xFF), 2);
+        cv::rectangle(img, cv::Point(tmp_rect.x, tmp_rect.y),  cv::Point(tmp_rect.x + tmp_rect.width, tmp_rect.y + tmp_rect.height), cv::Scalar(0, 0, 255), 3);
+    }
+
+    cv::imshow("demo", img);
+    cv::waitKey(0);
+
+    cudaFree(buffers[inputIndex]);
+    cudaFree(buffers[outputIndex]);
 
 }
 
@@ -708,16 +754,16 @@ int main(int argc, char** argv)
     assert(context != nullptr);
     delete[] trtModelStream;
 
-    std::string vpath = "/d/涛哥专用/dui/censong_0908_dui4.m4v";
+    std::string vpath = "/d/涛哥专用/door_inOut/nanshao_0910_door_0800.m4v";
     run_video(*context, vpath);
+
+//    run_image(*context);
 
 
     // Destroy the engine
     context->destroy();
     engine->destroy();
     runtime->destroy();
-
-
 
     return 0;
 }
