@@ -34,7 +34,7 @@ const char* OUTPUT_BLOB_NAME = "prob";
 //const char* INPUT_MODEL_WEIGHTS = "../yolov5n_v6_pruned.wts";
 //const char* INPUT_MODEL_WEIGHTS = "../generated.wts";
 
-const char* INPUT_MODEL_WEIGHTS="../ori.wts";
+const char* INPUT_MODEL_WEIGHTS="../pruned.weight";
 
 const int BATCH_SIZE = 1;
 const int INPUT_WIDTH = 640;
@@ -65,11 +65,14 @@ void ImagePrepare(cv::Mat& image, std::unique_ptr<float>& input_data) {
         x = (INPUT_WIDTH - w) / 2;
         y = 0;
     }
+    printf("==> %d, %d, %d, %d\n", w, h, x, y);
 
     cv::Mat re(h, w, CV_8UC3);
     cv::resize(image, re, re.size(), 0, 0, cv::INTER_CUBIC);
     cv::Mat out(INPUT_HEIGHT, INPUT_WIDTH, CV_8UC3, cv::Scalar(128, 128, 128));
     re.copyTo(out(cv::Rect(x, y, re.cols, re.rows)));
+//    cv::imshow("prepare", out);
+//    cv::waitKey(0);
 
     //split channels
     out.convertTo(out, CV_32FC3, 1. / 255.);
@@ -130,6 +133,12 @@ static void nms(std::vector<DetectRes>& res, float *output, float conf_thresh, f
 }
 
 static void get_rect(cv::Rect& rect, const int img_w, const int img_h, float bbox[4], int input_w, int input_h) {
+    for (int i = 0 ;i < 4; i++) {
+        std::cout<<bbox[i]<<" ";
+    }
+    std::cout<<std::endl;
+
+
     int l, r, t, b;
     float r_w = input_w / (img_w * 1.0);
     float r_h = input_h / (img_h * 1.0);
@@ -143,8 +152,12 @@ static void get_rect(cv::Rect& rect, const int img_w, const int img_h, float bbo
         t = t / r_w;
         b = b / r_w;
     } else {
-        l = bbox[0] - bbox[2]/2.f - (input_w - r_h * input_w) / 2;
-        r = bbox[0] + bbox[2]/2.f - (input_w - r_h * input_w) / 2;
+//        std::cout<<input_w<<" "<<img_w<<" "<<r_h<<" "<<input_w - r_h * img_w<<std::endl;
+        l = bbox[0] - bbox[2]/2.f - (input_w - r_h * img_w) / 2;
+        r = bbox[0] + bbox[2]/2.f - (input_w - r_h * img_w) / 2;
+
+        l = bbox[0] - bbox[2]/2.f;
+        r = bbox[0] + bbox[2]/2.f;
         t = bbox[1] - bbox[3]/2.f;
         b = bbox[1] + bbox[3]/2.f;
         l = l / r_h;
@@ -156,6 +169,11 @@ static void get_rect(cv::Rect& rect, const int img_w, const int img_h, float bbo
     rect.y = t;
     rect.width = r - l;
     rect.height = b - t;
+
+//    for (int i = 0 ;i < 4; i++) {
+//        std::cout<<bbox[i]<<" ";
+//    }
+//    std::cout<<std::endl;
 }
 
 
@@ -660,7 +678,7 @@ void run_image(IExecutionContext& context) {
     ImagePrepare(img, input_data);
 
     auto start = std::chrono::system_clock::now();
-    for (int i =0; i<1000; i++) {
+    for (int i =0; i<1; i++) {
         //模型推理
         CHECK(cudaMemcpyAsync(buffers[inputIndex], input_data.get(), BATCH_SIZE * 3 * INPUT_HEIGHT * INPUT_WIDTH * sizeof(float), cudaMemcpyHostToDevice, stream));
         context.enqueue(BATCH_SIZE, buffers, stream, nullptr);
@@ -754,10 +772,11 @@ int main(int argc, char** argv)
     assert(context != nullptr);
     delete[] trtModelStream;
 
-    std::string vpath = "/d/涛哥专用/door_inOut/nanshao_0910_door_0800.m4v";
-//    run_video(*context, vpath);
+//    std::string vpath = "/d/涛哥专用/door_inOut/nanshao_0910_door_0800.m4v";
+    std::string vpath = "/d/hulei/rida_res/run_test/transac_in/jintai3_1008_4_830.m4v";
+    run_video(*context, vpath);
 
-    run_image(*context);
+//    run_image(*context);
 
 
     // Destroy the engine
