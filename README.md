@@ -9,3 +9,5 @@ Fork来源: https://github.com/wang-xinyu/tensorrtx
 新增了stnet (权重来自paddle)
 
 新增了arcface-r100-glink360, pth权重从官方网盘下载，将gen_wts.py放到insightface/recognition/arcface_torch https://github.com/deepinsight/insightface/tree/master/recognition/arcface_torch 名称是backbone.pth
+
+新增了trt_pose, 官方项目https://github.com/NVIDIA-AI-IOT/trt_pose， 这里使用PaddlePddle的复现权重，项目地址: https://aistudio.baidu.com/aistudio/projectdetail/3516206
