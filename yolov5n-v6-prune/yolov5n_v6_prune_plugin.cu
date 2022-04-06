@@ -261,7 +261,7 @@ void YoloLayerPlugin6::forwardGpu(const float* const* inputs, float *output, cud
         numElem = yolo.width * yolo.height * batchSize;
         if (numElem < mThreadCount) mThreadCount = numElem;
 
-        printf("Net: %d  %d vs %d %d\n", mYoloV5NetWidth, mYoloV5NetHeight, yolo.width, yolo.height);
+        //printf("Net: %d  %d vs %d %d\n", mYoloV5NetWidth, mYoloV5NetHeight, yolo.width, yolo.height);
         CalDetection << < (numElem + mThreadCount - 1) / mThreadCount, mThreadCount, 0, stream >> >
                                                                                         (inputs[i], output, numElem, mYoloV5NetWidth, mYoloV5NetHeight, mMaxOutObject, yolo.width, yolo.height, (float*)mAnchor[i], mClassCount, outputElem);
     }
